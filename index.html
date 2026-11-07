@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#101827">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Turni Cinema">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>Turni Cinema</title>
+<style>
+:root{color-scheme:light;--ink:#152033;--muted:#68758a;--blue:#245fe8;--bg:#f3f6fb;--card:#fff;--line:#e4e9f1}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+main{max-width:560px;margin:auto;padding:env(safe-area-inset-top) 18px calc(28px + env(safe-area-inset-bottom))}
+header{padding:28px 4px 20px}h1{font-size:30px;margin:0 0 7px;letter-spacing:-.8px}.sub{color:var(--muted);line-height:1.45;margin:0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:18px;margin:14px 0;box-shadow:0 5px 18px #15203308}
+.label{font-size:13px;color:var(--muted);font-weight:650;display:block;margin-bottom:7px}
+input[type=text]{width:100%;padding:13px 14px;border:1px solid var(--line);border-radius:12px;font-size:16px;background:white;color:var(--ink)}
+button,.filebtn{border:0;border-radius:14px;background:var(--blue);color:#fff;font-weight:700;font-size:16px;padding:15px 17px;width:100%;display:flex;align-items:center;justify-content:center;gap:9px;cursor:pointer}
+button.secondary{background:#edf2ff;color:#214fc2}button:disabled{opacity:.45}
+input[type=file]{display:none}.hint{font-size:13px;color:var(--muted);line-height:1.45;margin:11px 2px 0}
+#status{font-size:14px;line-height:1.45;color:var(--muted);margin:12px 2px}
+.shift{display:flex;align-items:center;justify-content:space-between;gap:10px;border-top:1px solid var(--line);padding:13px 0}
+.shift:first-child{border-top:0}.shift strong{display:block}.shift small{display:block;color:var(--muted);margin-top:4px}
+.shift input{accent-color:var(--blue);width:20px;height:20px}
+.actions{display:grid;gap:10px;margin-top:14px}.note{background:#fff8e7;border:1px solid #f4dfaa;border-radius:14px;padding:13px;color:#75520c;font-size:13px;line-height:1.45}
+.hidden{display:none!important}.tag{font-size:12px;background:#eaf0ff;color:#2853b8;border-radius:99px;padding:5px 9px;font-weight:700}
+footer{font-size:12px;color:var(--muted);text-align:center;padding:16px 8px;line-height:1.5}
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+</head>
+<body>
+<main>
+<header>
+<div style="font-size:13px;font-weight:800;letter-spacing:1.6px;color:#245fe8;margin-bottom:9px">IL TUO ASSISTENTE TURNI</div>
+<h1>Turni Cinema</h1>
+<p class="sub">Carica il PDF della turnazione, controlla gli orari e prepara gli eventi per il Calendario Apple.</p>
+</header>
+
+<section class="card">
+<label class="label" for="employee">Nome da cercare nel PDF</label>
+<input id="employee" type="text" value="Marchiani Yuri" autocomplete="off">
+<div style="height:15px"></div>
+<label class="filebtn" for="pdfFile">＋ &nbsp; Seleziona PDF degli orari</label>
+<input id="pdfFile" type="file" accept="application/pdf">
+<p class="hint">Il PDF viene elaborato sul dispositivo. Non viene caricato su un server.</p>
+<div id="status" aria-live="polite">In attesa del PDF.</div>
+</section>
+
+<section id="previewCard" class="card hidden">
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+<strong>Anteprima dei turni</strong><span class="tag" id="count">0 turni</span>
+</div>
+<p class="hint" style="margin:0 0 8px">Verifica ogni data e orario. Le pause vengono escluse.</p>
+<div id="shifts"></div>
+<div class="actions">
+<button id="makeICS">Crea file per Calendario Apple</button>
+<button id="clear" class="secondary">Annulla importazione</button>
+</div>
+</section>
+
+<div class="note">
+<strong>Come funziona su iPhone</strong><br>
+iOS non consente a una web app di scrivere direttamente nel Calendario come un'app nativa. Questa app crea un file calendario (.ics): aprilo e scegli <em>Aggiungi tutto</em> per importare i turni.
+</div>
+<footer>Turni Cinema · Elaborazione locale · Nessun account o abbonamento</footer>
+</main>
+<script>
+if ('serviceWorker' in navigator) window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
+if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+const months={gen:0,feb:1,mar:2,apr:3,mag:4,giu:5,lug:6,ago:7,set:8,ott:9,nov:10,dic:11};
+let shifts=[];
+const $=id=>document.getElementById(id);
+const dateRe=/(\d{1,2})[-/](gen|feb|mar|apr|mag|giu|lug|ago|set|ott|nov|dic|\d{1,2})/i;
+const timeRe=/\b([01]?\d|2[0-3]):([0-5]\d)\b/g;
+function clean(s){return s.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim()}
+function parseDate(s){
+ const m=s.match(dateRe); if(!m)return null;
+ const day=+m[1], mo=months[m[2].toLowerCase()] ?? (+m[2]-1);
+ if(mo<0||mo>11)return null;
+ let year=new Date().getFullYear();
+ let d=new Date(year,mo,day,12);
+ const today=new Date(); today.setHours(0,0,0,0);
+ if(d<today && mo<today.getMonth()) d=new Date(year+1,mo,day,12);
+ return d;
+}
+function timeValue(s){const m=s.match(/^(\d{1,2}):(\d{2})$/);return m?+m[1]*60 + +m[2]:null}
+function combine(day,mins){const d=new Date(day);d.setHours(Math.floor(mins/60),mins%60,0,0);return d}
+function fmtDate(d){return new Intl.DateTimeFormat('it-IT',{weekday:'short',day:'2-digit',month:'long'}).format(d)}
+function fmtTime(d){return d.toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'})}
+
+async function readPDF(file){
+ if(!window.pdfjsLib) throw Error('Lettore PDF non disponibile. Controlla la connessione e riprova.');
+ const buf=await file.arrayBuffer(), pdf=await pdfjsLib.getDocument({data:buf}).promise;
+ let items=[];
+ for(let p=1;p<=pdf.numPages;p++){
+   const page=await pdf.getPage(p), content=await page.getTextContent();
+   for(const it of content.items){
+     if(!it.str || !it.str.trim()) continue;
+     const tr=it.transform;
+     items.push({text:it.str.trim(),x:tr[4],y:tr[5],page:p});
+   }
+ }
+ return items;
+}
+function groupRows(items){
+ const sorted=[...items].sort((a,b)=>b.y-a.y||a.x-b.x), rows=[];
+ for(const it of sorted){
+   let row=rows.find(r=>r.page===it.page && Math.abs(r.y-it.y)<2.5);
+   if(!row){row={page:it.page,y:it.y,items:[]};rows.push(row)}
+   row.items.push(it);
+ }
+ rows.forEach(r=>r.items.sort((a,b)=>a.x-b.x));
+ return rows;
+}
+function extractDates(rows){
+ const found=[];
+ for(const r of rows) for(const it of r.items){
+   const m=it.text.match(dateRe);
+   if(m){const d=parseDate(it.text);if(d)found.push({date:d,x:it.x,y:it.y,page:it.page,text:it.text})}
+ }
+ // Keep one occurrence for each date, preferring the row with most date labels.
+ const unique=[];
+ for(const f of found) if(!unique.some(u=>u.date.toDateString()===f.date.toDateString())) unique.push(f);
+ return unique.sort((a,b)=>a.date-b.date);
+}
+function parseSchedule(items, employee){
+ const rows=groupRows(items), needle=clean(employee);
+ const row=rows.find(r=>clean(r.items.map(i=>i.text).join(' ')).includes(needle));
+ if(!row) throw Error('Non trovo "'+employee+'" nel PDF. Controlla il nome scritto nella casella.');
+ const dates=extractDates(rows);
+ if(dates.length<2) throw Error('Non riesco a individuare le date della settimana nel PDF.');
+ const dayLabels=dates.filter(d=>d.page===row.page);
+ if(dayLabels.length<2) throw Error('Le date e la riga del dipendente sembrano trovarsi su pagine diverse.');
+ const centers=dayLabels.map(d=>d.x).sort((a,b)=>a-b);
+ const boundaries=centers.map((x,i)=>i===0?-Infinity:(centers[i-1]+x)/2);
+ const endBounds=centers.map((x,i)=>i===centers.length-1?Infinity:(x+centers[i+1])/2);
+ const byDay=dayLabels.map((d,i)=>({date:d.date,times:[]}));
+ for(const it of row.items){
+   const matches=[...it.text.matchAll(timeRe)].map(m=>m[0]);
+   if(!matches.length) continue;
+   const idx=centers.findIndex((x,i)=>it.x>=boundaries[i] && it.x<endBounds[i]);
+   if(idx>=0) byDay[idx].times.push(...matches);
+ }
+ const out=[];
+ for(const day of byDay){
+   const vals=day.times.map(timeValue).filter(v=>v!==null);
+   if(vals.length>=2){
+     // The shift begins at the first time and ends at the last; middle values are the break.
+     const start=combine(day.date,vals[0]);
+     let end=combine(day.date,vals[vals.length-1]);
+     if(end<=start) end.setDate(end.getDate()+1);
+     if((end-start)/60000>0 && (end-start)/3600000<=18) out.push({date:day.date,start,end,enabled:true});
+   }
+ }
+ if(!out.length) throw Error('Ho trovato il nominativo ma non sono riuscito ad associare gli orari ai giorni. Non ho creato eventi: serve verificare il formato del PDF.');
+ return out.sort((a,b)=>a.start-b.start);
+}
+function render(){
+ $('shifts').innerHTML='';
+ shifts.forEach((s,i)=>{
+   const el=document.createElement('div');el.className='shift';
+   el.innerHTML=`<div><strong>${fmtDate(s.date)}</strong><small>${fmtTime(s.start)} – ${fmtTime(s.end)}</small></div><input type="checkbox" ${s.enabled?'checked':''} aria-label="Includi turno">`;
+   el.querySelector('input').addEventListener('change',e=>{shifts[i].enabled=e.target.checked;updateCount()});
+   $('shifts').appendChild(el);
+ });
+ $('previewCard').classList.remove('hidden');updateCount();
+}
+function updateCount(){const n=shifts.filter(s=>s.enabled).length;$('count').textContent=n+' '+(n===1?'turno':'turni');$('makeICS').disabled=n===0}
+$('pdfFile').addEventListener('change',async e=>{
+ const file=e.target.files[0];if(!file)return;
+ $('status').textContent='Sto leggendo il PDF…';$('previewCard').classList.add('hidden');
+ try{const items=await readPDF(file);shifts=parseSchedule(items,$('employee').value);render();$('status').textContent='Controlla attentamente date e orari prima di creare il calendario.'}
+ catch(err){$('status').textContent=err.message;shifts=[]}
+ e.target.value='';
+});
+$('clear').addEventListener('click',()=>{shifts=[];$('previewCard').classList.add('hidden');$('status').textContent='Importazione annullata.'});
+function escICS(s){return s.replace(/\\/g,'\\\\').replace(/;/g,'\\;').replace(/,/g,'\\,').replace(/\n/g,'\\n')}
+function icsDate(d){return d.getFullYear()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0')+'T'+String(d.getHours()).padStart(2,'0')+String(d.getMinutes()).padStart(2,'0')+'00'}
+$('makeICS').addEventListener('click',()=>{
+ const selected=shifts.filter(s=>s.enabled), now=new Date();
+ let body='BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Turni Cinema//IT\r\nCALSCALE:GREGORIAN\r\nMETHOD:PUBLISH\r\n';
+ for(const s of selected){
+   const uid='turnicinema-'+s.start.getTime()+'@local';
+   body+='BEGIN:VEVENT\r\nUID:'+uid+'\r\nDTSTAMP:'+icsDate(now)+'\r\nDTSTART;TZID=Europe/Rome:'+icsDate(s.start)+'\r\nDTEND;TZID=Europe/Rome:'+icsDate(s.end)+'\r\nSUMMARY:'+escICS('Lavoro')+'\r\nEND:VEVENT\r\n';
+ }
+ body+='END:VCALENDAR\r\n';
+ const blob=new Blob([body],{type:'text/calendar;charset=utf-8'}), url=URL.createObjectURL(blob);
+ const a=document.createElement('a');a.href=url;a.download='turni-lavoro.ics';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),2000);
+ $('status').textContent='File creato. Apri “turni-lavoro.ics” dall’app File e aggiungi gli eventi al Calendario.';
+});
+</script>
+</body></html>
